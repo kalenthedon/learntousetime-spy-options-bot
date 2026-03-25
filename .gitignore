@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+deployment/alpaca_options.env
+centralized_data/
+experiments/
+.DS_Store
+
