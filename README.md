@@ -1,4 +1,4 @@
-# Learn To Use Time Options
+# Learn To Use Time SPY Options Bot
 
 Separate repo for the SPY options bot research branch.
 

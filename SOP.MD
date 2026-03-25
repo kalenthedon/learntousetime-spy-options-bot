@@ -1,4 +1,4 @@
-# Options Bot SOP
+# Learn To Use Time SPY Options Bot SOP
 
 ## Scope
 
