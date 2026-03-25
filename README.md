@@ -56,6 +56,11 @@ cp deployment/alpaca_options.env.example deployment/alpaca_options.env
 ```
 
 4. Add your Alpaca keys to `deployment/alpaca_options.env`.
+5. Optional: source the repo aliases:
+
+```bash
+source project_aliases.zsh
+```
 
 ## Main Commands
 
@@ -71,11 +76,34 @@ Append one snapshot into the local history file:
 ./.venv/bin/python -m src.options.collect_alpaca_option_history
 ```
 
+Check whether the local history is deep enough to research:
+
+```bash
+./.venv/bin/python -m src.options.history_status
+```
+
+Run a scheduled-safe market-hours collection step:
+
+```bash
+./.venv/bin/python -m src.options.market_hours_collect
+```
+
 Run starter walk-forward ML research on a chain snapshot CSV:
 
 ```bash
 ./.venv/bin/python -m src.backtests.run_options_research --csv-path centralized_data/options/SPY_put_chain_history.csv
 ```
+
+## Suggested Workflow
+
+1. Collect snapshots repeatedly during market hours.
+2. Watch `history_status` until the dataset has enough unique snapshots and contracts.
+3. Run the starter research workflow on the accumulated history.
+4. Use that output to decide whether to build a real options PnL backtest next.
+
+Suggested automation:
+- run `market_hours_collect` every 15 minutes
+- the script will skip outside regular US market hours automatically
 
 ## Notes
 
