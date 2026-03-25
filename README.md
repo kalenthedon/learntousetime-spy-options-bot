@@ -1,11 +1,42 @@
 # Learn To Use Time SPY Options Bot
 
-Separate repo for the SPY options bot research branch.
+Separate research repo for the Learn To Use Time Academy SPY options bot.
+
+This repo exists so the options workflow stays isolated from the crypto bot and is easier to teach, maintain, and evolve.
 
 Current first path:
 - underlying: `SPY`
 - structure: `single-leg long puts`
 - contract window: `7-21 DTE`
+
+## What This Repo Does
+
+- captures filtered SPY put-chain snapshots from Alpaca
+- appends snapshots into a local history file
+- builds option-specific features and labels
+- runs a starter walk-forward ML research workflow
+
+## What This Repo Does Not Do Yet
+
+- paper trade options
+- place live options orders
+- model assignment / exercise risk
+- run a full production-grade options PnL and fill simulator
+
+## Repo Structure
+
+- `src/data/`
+  - Alpaca options and stock market data helpers
+- `src/options/`
+  - contract normalization, universe selection, chain capture, and history collection
+- `src/backtests/`
+  - starter options research pipeline
+- `src/ml/`
+  - shared walk-forward model training utilities
+- `src/validation/`
+  - purged walk-forward splitter
+- `ops/options/`
+  - planning notes for the SPY options bot branch
 
 ## Setup
 
@@ -45,3 +76,9 @@ Run starter walk-forward ML research on a chain snapshot CSV:
 ```bash
 ./.venv/bin/python -m src.backtests.run_options_research --csv-path centralized_data/options/SPY_put_chain_history.csv
 ```
+
+## Notes
+
+- This repo is intentionally separate from the crypto bot repo.
+- The crypto bot lives here:
+  - `https://github.com/kalenthedon/learntousetime-crypto-bot`
