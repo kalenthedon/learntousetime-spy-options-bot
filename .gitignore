@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 deployment/alpaca_options.env
+deployment/*.log
 centralized_data/
 experiments/
 .DS_Store
-

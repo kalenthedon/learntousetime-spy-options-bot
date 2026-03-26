@@ -24,8 +24,18 @@ def build_status() -> dict:
     latest_ts = None
     if not latest.empty and "timestamp" in latest.columns:
         latest_ts = str(latest["timestamp"].max())
+    latest_collected_at = None
+    if not latest.empty and "collected_at" in latest.columns:
+        latest_collected_at = str(latest["collected_at"].max())
+    elif not latest.empty and "timestamp" in latest.columns:
+        latest_collected_at = str(pd.to_datetime(latest["timestamp"], utc=True, errors="coerce").dt.floor("15min").max())
 
-    history_ts_count = int(history["timestamp"].nunique()) if not history.empty and "timestamp" in history.columns else 0
+    history_snapshot_count = 0
+    if not history.empty:
+        if "collected_at" in history.columns:
+            history_snapshot_count = int(history["collected_at"].nunique())
+        elif "timestamp" in history.columns:
+            history_snapshot_count = int(pd.to_datetime(history["timestamp"], utc=True, errors="coerce").dt.floor("15min").nunique())
     history_contract_count = (
         int(history["option_symbol"].nunique()) if not history.empty and "option_symbol" in history.columns else 0
     )
@@ -39,9 +49,10 @@ def build_status() -> dict:
         "latest_rows": int(len(latest)),
         "history_rows": int(len(history)),
         "latest_timestamp": latest_ts,
-        "history_snapshot_count": history_ts_count,
+        "latest_collected_at": latest_collected_at,
+        "history_snapshot_count": history_snapshot_count,
         "history_contract_count": history_contract_count,
-        "ready_for_research": history_ts_count >= 50 and history_contract_count >= 20,
+        "ready_for_research": history_snapshot_count >= 50 and history_contract_count >= 20,
         "top_contracts": top_contracts,
     }
 
@@ -56,6 +67,7 @@ def render_report(status: dict) -> str:
             f" | unique contracts: {status['history_contract_count']}"
         ),
         f"Latest timestamp: {status['latest_timestamp'] or 'n/a'}",
+        f"Latest collected_at: {status['latest_collected_at'] or 'n/a'}",
         f"Ready for starter research: {status['ready_for_research']}",
     ]
     if status["top_contracts"]:
