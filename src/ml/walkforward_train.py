@@ -184,8 +184,6 @@ def walk_forward_train_predict(
         if len(train_idx_eff) < 200 or len(test_idx_eff) < 20:
             continue
 
-        model = model_factory()
-
         X_test = X.iloc[test_idx_eff]
         y_test = y.iloc[test_idx_eff]
 
@@ -207,6 +205,34 @@ def walk_forward_train_predict(
 
         X_es = X.iloc[es_idx] if es_idx is not None else None
         y_es = y.iloc[es_idx] if es_idx is not None else None
+
+        if pd.Series(y_fit).nunique() < 2:
+            constant_proba = float(pd.Series(y_fit).iloc[0]) if len(y_fit) else 0.0
+            fold_df = pd.DataFrame(
+                {
+                    "fold_id": fold_id,
+                    "proba_raw": np.full(len(y_test), constant_proba, dtype=float),
+                    "y_true": y_test.to_numpy(),
+                },
+                index=out_index[test_idx_eff],
+            )
+            fold_diags.append({
+                "fold_id": int(fold_id),
+                "n": int(len(fold_df)),
+                "pos_rate": float(np.mean(fold_df["y_true"])) if len(fold_df) else 0.0,
+                "proba_col": "proba_raw",
+                "auc": float("nan"),
+                "auc_inverted": float("nan"),
+                "logloss": float("nan"),
+                "start": str(fold_df.index.min()),
+                "end": str(fold_df.index.max()),
+                "note": f"single_class_train={int(constant_proba)}",
+            })
+            preds_out.append(fold_df)
+            print(f"Fold {fold_id} | single-class training slice -> constant proba={constant_proba:.3f}")
+            continue
+
+        model = model_factory()
 
         model = _fit_with_optional_early_stopping(model, X_fit, y_fit, X_es, y_es, cfg)
 

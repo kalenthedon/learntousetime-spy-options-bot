@@ -59,6 +59,8 @@ def capture_spy_long_put_chain(
     selected_contracts = contracts_df.to_dict(orient="records")
     snapshots = fetch_option_snapshots(contract.get("symbol") for contract in selected_contracts)
     frame = snapshots_to_frame(selected_contracts, snapshots)
+    if not frame.empty:
+        frame["underlying_price"] = frame["underlying_price"].where(frame["underlying_price"] > 0, spot_price)
     frame = filter_long_put_candidates(frame)
     frame = score_long_put_candidates(frame)
 
