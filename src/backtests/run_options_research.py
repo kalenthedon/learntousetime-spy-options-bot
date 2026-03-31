@@ -130,20 +130,26 @@ def prepare_option_research_frame(
     return feat, feature_cols
 
 
-def summarize_top_contracts(pred_df: pd.DataFrame, proba_col: str, top_k: int = 1) -> dict:
+def summarize_top_contracts(
+    pred_df: pd.DataFrame,
+    proba_col: str,
+    top_k: int = 1,
+    selection_group_col: str = "selection_time",
+) -> dict:
     if pred_df.empty:
         return {
-            "timestamps": 0,
+            "selection_groups": 0,
             "avg_top_probability": None,
             "avg_positive_rate_top": None,
             "top_k": top_k,
         }
 
     working = pred_df.copy()
-    working["rank"] = working.groupby("timestamp")[proba_col].rank(method="first", ascending=False)
+    group_col = selection_group_col if selection_group_col in working.columns else "timestamp"
+    working["rank"] = working.groupby(group_col)[proba_col].rank(method="first", ascending=False)
     top = working.loc[working["rank"] <= top_k].copy()
     return {
-        "timestamps": int(working["timestamp"].nunique()),
+        "selection_groups": int(working[group_col].nunique()),
         "avg_top_probability": float(top[proba_col].mean()),
         "avg_positive_rate_top": float(top["y_true"].mean()),
         "top_k": int(top_k),
@@ -235,13 +241,15 @@ def simulate_option_selection_trades(
     min_entry_proba: float,
     top_k: int,
     allow_overlapping_positions: bool,
+    selection_group_col: str = "selection_time",
 ) -> pd.DataFrame:
     if pred_df.empty:
         return pd.DataFrame()
 
     enriched = pred_df.reset_index().copy()
-    enriched = enriched.sort_values(["timestamp", proba_col], ascending=[True, False]).copy()
-    enriched["rank"] = enriched.groupby("timestamp")[proba_col].rank(method="first", ascending=False)
+    group_col = selection_group_col if selection_group_col in enriched.columns else "timestamp"
+    enriched = enriched.sort_values([group_col, proba_col], ascending=[True, False]).copy()
+    enriched["rank"] = enriched.groupby(group_col)[proba_col].rank(method="first", ascending=False)
     selected = enriched.loc[(enriched["rank"] <= int(top_k)) & (enriched[proba_col] >= float(min_entry_proba))].copy()
     if selected.empty:
         return pd.DataFrame()
@@ -255,7 +263,8 @@ def simulate_option_selection_trades(
     active_until_timestamp = None
 
     for row in selected.itertuples(index=False):
-        key = (str(row.timestamp), str(row.option_symbol))
+        selection_time = getattr(row, group_col)
+        key = (str(selection_time), str(row.option_symbol))
         if key in seen_entries:
             continue
         row_timestamp = pd.Timestamp(row.timestamp)
@@ -278,6 +287,7 @@ def simulate_option_selection_trades(
         if trade is None:
             continue
         trade["entry_probability"] = float(getattr(row, proba_col))
+        trade["selection_time"] = str(selection_time)
         trades.append(trade)
         active_until_timestamp = pd.Timestamp(trade["exit_timestamp"])
 
@@ -330,7 +340,23 @@ def run_options_research(
         max_adverse_return_pct=max_adverse_return_pct,
     )
     frame = frame.reset_index(drop=True)
+    if "collected_at" in frame.columns:
+        frame["snapshot_time"] = pd.to_datetime(frame["collected_at"], utc=True, errors="coerce")
+    else:
+        frame["snapshot_time"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.floor("15min")
+    frame = frame.dropna(subset=["snapshot_time"]).sort_values(
+        ["snapshot_time", "timestamp", "expiration", "strike", "option_type", "option_symbol"]
+    ).reset_index(drop=True)
     frame["row_id"] = np.arange(len(frame))
+    frame["snapshot_id"] = pd.factorize(frame["snapshot_time"], sort=False)[0]
+
+    snapshot_count = int(frame["snapshot_id"].nunique())
+    if snapshot_count < train_size + test_size:
+        raise RuntimeError(
+            "Not enough unique snapshots for the requested walk-forward windows. "
+            f"have={snapshot_count}, need_at_least={train_size + test_size}. "
+            "Reduce --train-size/--test-size or collect more market-hours snapshots."
+        )
 
     cfg = WalkForwardRunConfig(
         feature_cols=feature_cols,
@@ -342,6 +368,8 @@ def run_options_research(
         calibrate=False,
         save_models=False,
         save_latest_model_bundle=False,
+        min_train_rows=150,
+        min_test_rows=20,
     )
 
     pred_df, diag = walk_forward_train_predict(
@@ -349,10 +377,14 @@ def run_options_research(
         model_factory=build_model_factory(model_type),
         cfg=cfg,
         time_col="row_id",
+        split_group_col="snapshot_id",
     )
     pred_df = pred_df.join(
-        frame.set_index("row_id")[["timestamp", "option_symbol", "underlying_symbol", "option_type", "days_to_expiry"]]
+        frame.set_index("row_id")[
+            ["timestamp", "snapshot_time", "option_symbol", "underlying_symbol", "option_type", "days_to_expiry"]
+        ]
     )
+    pred_df["selection_time"] = pred_df["snapshot_time"].astype(str)
 
     proba_col = "proba_cal" if "proba_cal" in pred_df.columns else "proba_raw"
     auc = None
@@ -367,18 +399,42 @@ def run_options_research(
         "rows_model": int(len(frame)),
         "underlyings": sorted(frame["underlying_symbol"].dropna().unique().tolist()),
         "contracts": int(frame["option_symbol"].nunique()),
+        "snapshot_count": snapshot_count,
         "model_type": model_type,
+        "split_unit": "snapshot",
         "horizon_bars": int(horizon_bars),
         "target_return_pct": float(target_return_pct),
         "max_adverse_return_pct": float(max_adverse_return_pct),
         "oos_rows": int(len(pred_df)),
         "proba_col": proba_col,
         "oos_auc": auc,
+        "oos_auc_inverted": float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None,
         "oos_logloss": ll,
         "oos_positive_rate": float(pred_df["y_true"].mean()) if not pred_df.empty else None,
-        "top_contract_summary": summarize_top_contracts(pred_df, proba_col=proba_col, top_k=top_k),
+        "top_contract_summary": summarize_top_contracts(
+            pred_df,
+            proba_col=proba_col,
+            top_k=top_k,
+            selection_group_col="selection_time",
+        ),
         "fold_count": int(len(diag.get("fold_diags", []))),
+        "mean_fold_auc": (
+            float(np.nanmean([float(row.get("auc")) for row in diag.get("fold_diags", [])]))
+            if diag.get("fold_diags")
+            else None
+        ),
+        "mean_fold_auc_inverted": (
+            float(np.nanmean([float(row.get("auc_inverted")) for row in diag.get("fold_diags", [])]))
+            if diag.get("fold_diags")
+            else None
+        ),
     }
+    if summary["oos_auc"] is not None and summary["oos_auc_inverted"] is not None:
+        summary["probability_orientation_hint"] = (
+            "inverted_probabilities_rank_better_across_folds"
+            if summary["oos_auc_inverted"] > summary["oos_auc"]
+            else "raw_probabilities_rank_better_across_folds"
+        )
 
     trades_df = simulate_option_selection_trades(
         frame=frame,
@@ -390,6 +446,7 @@ def run_options_research(
         min_entry_proba=min_entry_proba,
         top_k=top_k,
         allow_overlapping_positions=allow_overlapping_positions,
+        selection_group_col="selection_time",
     )
     summary["selection_rules"] = {
         "min_entry_proba": float(min_entry_proba),
@@ -411,10 +468,10 @@ def run_options_research(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run walk-forward ML research on option-chain snapshots.")
     parser.add_argument("--csv-path", required=True)
-    parser.add_argument("--model-type", choices=["logistic", "random_forest", "hist_gbm"], default="random_forest")
-    parser.add_argument("--train-size", type=int, default=320)
-    parser.add_argument("--test-size", type=int, default=60)
-    parser.add_argument("--step-size", type=int, default=60)
+    parser.add_argument("--model-type", choices=["logistic", "random_forest", "hist_gbm"], default="logistic")
+    parser.add_argument("--train-size", type=int, default=48)
+    parser.add_argument("--test-size", type=int, default=12)
+    parser.add_argument("--step-size", type=int, default=12)
     parser.add_argument("--horizon-bars", type=int, default=8)
     parser.add_argument("--target-return-pct", type=float, default=0.25)
     parser.add_argument("--max-adverse-return-pct", type=float, default=-0.20)

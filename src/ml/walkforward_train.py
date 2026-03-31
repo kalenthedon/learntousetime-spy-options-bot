@@ -30,6 +30,8 @@ class WalkForwardRunConfig:
     step_size: int
     purge_size: int
     embargo_size: int = 0
+    min_train_rows: int = 200
+    min_test_rows: int = 20
 
     # Early stopping
     enable_early_stopping: bool = True
@@ -145,18 +147,26 @@ def walk_forward_train_predict(
     model_factory: Callable[[], BaseEstimator],
     cfg: WalkForwardRunConfig,
     time_col: Optional[str] = None,
+    split_group_col: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Returns:
       pred_df: out-of-sample predictions
       diag: diagnostics dict with OOS metrics and fold diagnostics
     """
-    assert_time_sorted(df, time_col=time_col)
+    assert_time_sorted(df, time_col=split_group_col or time_col)
 
     X = df[cfg.feature_cols].astype(float)
     y = df[cfg.label_col].astype(int)
 
-    n = len(df)
+    if split_group_col is not None:
+        split_groups = pd.Series(df[split_group_col]).reset_index(drop=True)
+        group_codes, group_values = pd.factorize(split_groups, sort=False)
+        n = len(group_values)
+    else:
+        split_groups = None
+        group_codes = None
+        n = len(df)
     splitter = PurgedWalkForwardSplitter(
         PurgedWalkForwardConfig(
             train_size=cfg.train_size,
@@ -175,13 +185,20 @@ def walk_forward_train_predict(
     os.makedirs(cfg.model_dir, exist_ok=True)
 
     for fold_id, (train_idx, test_idx) in enumerate(splitter.split(n)):
-        train_mask = np.isfinite(X.iloc[train_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[train_idx].to_numpy())
-        test_mask = np.isfinite(X.iloc[test_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[test_idx].to_numpy())
+        if split_group_col is not None:
+            train_row_idx = np.flatnonzero(np.isin(group_codes, train_idx))
+            test_row_idx = np.flatnonzero(np.isin(group_codes, test_idx))
+        else:
+            train_row_idx = train_idx
+            test_row_idx = test_idx
 
-        train_idx_eff = train_idx[train_mask]
-        test_idx_eff = test_idx[test_mask]
+        train_mask = np.isfinite(X.iloc[train_row_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[train_row_idx].to_numpy())
+        test_mask = np.isfinite(X.iloc[test_row_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[test_row_idx].to_numpy())
 
-        if len(train_idx_eff) < 200 or len(test_idx_eff) < 20:
+        train_idx_eff = train_row_idx[train_mask]
+        test_idx_eff = test_row_idx[test_mask]
+
+        if len(train_idx_eff) < cfg.min_train_rows or len(test_idx_eff) < cfg.min_test_rows:
             continue
 
         X_test = X.iloc[test_idx_eff]
