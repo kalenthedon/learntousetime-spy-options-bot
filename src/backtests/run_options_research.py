@@ -27,6 +27,30 @@ DEFAULT_OUTPUT_PATH = "experiments/options_research_summary.json"
 DEFAULT_TRADES_OUTPUT_PATH = "experiments/options_research_trades.csv"
 
 
+def resolve_selection_orientation(
+    requested: str,
+    oos_auc: float | None,
+    oos_auc_inverted: float | None,
+) -> str:
+    requested = str(requested).strip().lower()
+    if requested in {"raw", "inverted"}:
+        return requested
+    if requested != "auto":
+        raise ValueError(f"Unsupported selection_orientation: {requested}")
+    if oos_auc is None or oos_auc_inverted is None:
+        return "raw"
+    return "inverted" if float(oos_auc_inverted) > float(oos_auc) else "raw"
+
+
+def apply_selection_orientation(pred_df: pd.DataFrame, proba_col: str, orientation: str) -> tuple[pd.DataFrame, str]:
+    oriented = pred_df.copy()
+    if orientation == "inverted":
+        oriented["selection_score"] = 1.0 - oriented[proba_col].astype(float)
+        return oriented, "selection_score"
+    oriented["selection_score"] = oriented[proba_col].astype(float)
+    return oriented, "selection_score"
+
+
 def load_option_chain_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     return repair_underlying_prices(normalize_option_chain_frame(df))
@@ -132,7 +156,7 @@ def prepare_option_research_frame(
 
 def summarize_top_contracts(
     pred_df: pd.DataFrame,
-    proba_col: str,
+    score_col: str,
     top_k: int = 1,
     selection_group_col: str = "selection_time",
 ) -> dict:
@@ -146,11 +170,11 @@ def summarize_top_contracts(
 
     working = pred_df.copy()
     group_col = selection_group_col if selection_group_col in working.columns else "timestamp"
-    working["rank"] = working.groupby(group_col)[proba_col].rank(method="first", ascending=False)
+    working["rank"] = working.groupby(group_col)[score_col].rank(method="first", ascending=False)
     top = working.loc[working["rank"] <= top_k].copy()
     return {
         "selection_groups": int(working[group_col].nunique()),
-        "avg_top_probability": float(top[proba_col].mean()),
+        "avg_top_score": float(top[score_col].mean()),
         "avg_positive_rate_top": float(top["y_true"].mean()),
         "top_k": int(top_k),
         "rows_selected": int(len(top)),
@@ -234,11 +258,11 @@ def _simulate_option_trade(
 def simulate_option_selection_trades(
     frame: pd.DataFrame,
     pred_df: pd.DataFrame,
-    proba_col: str,
+    score_col: str,
     horizon_bars: int,
     target_return_pct: float,
     max_adverse_return_pct: float,
-    min_entry_proba: float,
+    min_entry_score: float,
     top_k: int,
     allow_overlapping_positions: bool,
     selection_group_col: str = "selection_time",
@@ -248,9 +272,9 @@ def simulate_option_selection_trades(
 
     enriched = pred_df.reset_index().copy()
     group_col = selection_group_col if selection_group_col in enriched.columns else "timestamp"
-    enriched = enriched.sort_values([group_col, proba_col], ascending=[True, False]).copy()
-    enriched["rank"] = enriched.groupby(group_col)[proba_col].rank(method="first", ascending=False)
-    selected = enriched.loc[(enriched["rank"] <= int(top_k)) & (enriched[proba_col] >= float(min_entry_proba))].copy()
+    enriched = enriched.sort_values([group_col, score_col], ascending=[True, False]).copy()
+    enriched["rank"] = enriched.groupby(group_col)[score_col].rank(method="first", ascending=False)
+    selected = enriched.loc[(enriched["rank"] <= int(top_k)) & (enriched[score_col] >= float(min_entry_score))].copy()
     if selected.empty:
         return pd.DataFrame()
 
@@ -286,7 +310,7 @@ def simulate_option_selection_trades(
         )
         if trade is None:
             continue
-        trade["entry_probability"] = float(getattr(row, proba_col))
+        trade["entry_score"] = float(getattr(row, score_col))
         trade["selection_time"] = str(selection_time)
         trades.append(trade)
         active_until_timestamp = pd.Timestamp(trade["exit_timestamp"])
@@ -326,9 +350,10 @@ def run_options_research(
     horizon_bars: int,
     target_return_pct: float,
     max_adverse_return_pct: float,
-    min_entry_proba: float,
+    min_entry_score: float,
     top_k: int,
     allow_overlapping_positions: bool,
+    selection_orientation: str = "auto",
     output_path: str = DEFAULT_OUTPUT_PATH,
     trades_output_path: str = DEFAULT_TRADES_OUTPUT_PATH,
 ) -> dict:
@@ -392,6 +417,9 @@ def run_options_research(
     if not pred_df.empty and pred_df["y_true"].nunique() >= 2:
         auc = float(roc_auc_score(pred_df["y_true"], pred_df[proba_col]))
         ll = float(log_loss(pred_df["y_true"], pred_df[proba_col], labels=[0, 1]))
+    oos_auc_inverted = float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None
+    resolved_selection_orientation = resolve_selection_orientation(selection_orientation, auc, oos_auc_inverted)
+    pred_df, score_col = apply_selection_orientation(pred_df, proba_col=proba_col, orientation=resolved_selection_orientation)
 
     summary = {
         "csv_path": csv_path,
@@ -407,13 +435,14 @@ def run_options_research(
         "max_adverse_return_pct": float(max_adverse_return_pct),
         "oos_rows": int(len(pred_df)),
         "proba_col": proba_col,
+        "selection_score_col": score_col,
         "oos_auc": auc,
-        "oos_auc_inverted": float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None,
+        "oos_auc_inverted": oos_auc_inverted,
         "oos_logloss": ll,
         "oos_positive_rate": float(pred_df["y_true"].mean()) if not pred_df.empty else None,
         "top_contract_summary": summarize_top_contracts(
             pred_df,
-            proba_col=proba_col,
+            score_col=score_col,
             top_k=top_k,
             selection_group_col="selection_time",
         ),
@@ -429,6 +458,7 @@ def run_options_research(
             else None
         ),
     }
+    summary["selection_orientation"] = resolved_selection_orientation
     if summary["oos_auc"] is not None and summary["oos_auc_inverted"] is not None:
         summary["probability_orientation_hint"] = (
             "inverted_probabilities_rank_better_across_folds"
@@ -439,17 +469,17 @@ def run_options_research(
     trades_df = simulate_option_selection_trades(
         frame=frame,
         pred_df=pred_df,
-        proba_col=proba_col,
+        score_col=score_col,
         horizon_bars=horizon_bars,
         target_return_pct=target_return_pct,
         max_adverse_return_pct=max_adverse_return_pct,
-        min_entry_proba=min_entry_proba,
+        min_entry_score=min_entry_score,
         top_k=top_k,
         allow_overlapping_positions=allow_overlapping_positions,
         selection_group_col="selection_time",
     )
     summary["selection_rules"] = {
-        "min_entry_proba": float(min_entry_proba),
+        "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
         "allow_overlapping_positions": bool(allow_overlapping_positions),
         "horizon_bars": int(horizon_bars),
@@ -475,8 +505,9 @@ def main() -> None:
     parser.add_argument("--horizon-bars", type=int, default=8)
     parser.add_argument("--target-return-pct", type=float, default=0.25)
     parser.add_argument("--max-adverse-return-pct", type=float, default=-0.20)
-    parser.add_argument("--min-entry-proba", type=float, default=0.30)
+    parser.add_argument("--min-entry-score", type=float, default=0.30)
     parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
     parser.add_argument("--allow-overlapping-positions", action="store_true")
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--trades-output-path", default=DEFAULT_TRADES_OUTPUT_PATH)
@@ -491,9 +522,10 @@ def main() -> None:
         horizon_bars=args.horizon_bars,
         target_return_pct=args.target_return_pct,
         max_adverse_return_pct=args.max_adverse_return_pct,
-        min_entry_proba=args.min_entry_proba,
+        min_entry_score=args.min_entry_score,
         top_k=args.top_k,
         allow_overlapping_positions=args.allow_overlapping_positions,
+        selection_orientation=args.selection_orientation,
         output_path=args.output_path,
         trades_output_path=args.trades_output_path,
     )
