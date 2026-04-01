@@ -100,6 +100,11 @@ Write the current ML-ranked candidate report for the latest snapshot:
 ./.venv/bin/python -m src.options.current_candidate_report
 ```
 
+This writes:
+- `experiments/options_current_candidates.json`
+- `experiments/options_current_candidates.csv`
+- `experiments/options_candidate_journal.csv`
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.

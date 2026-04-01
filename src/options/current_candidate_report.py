@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 import sys
@@ -26,6 +27,8 @@ DEFAULT_HISTORY_PATH = "centralized_data/options/SPY_put_chain_history.csv"
 DEFAULT_LATEST_PATH = "centralized_data/options/SPY_put_chain_latest.csv"
 DEFAULT_OUTPUT_PATH = "experiments/options_current_candidates.json"
 DEFAULT_CSV_OUTPUT_PATH = "experiments/options_current_candidates.csv"
+DEFAULT_JOURNAL_PATH = "experiments/options_candidate_journal.csv"
+DEFAULT_THRESHOLD_SWEEP = "0.01,0.02,0.03,0.05,0.10,0.15,0.20,0.30"
 
 
 def _load_snapshot_csv(path: str) -> pd.DataFrame:
@@ -43,6 +46,68 @@ def _records_for_json(df: pd.DataFrame) -> list[dict]:
         if pd.api.types.is_datetime64_any_dtype(safe[col]):
             safe[col] = safe[col].astype(str)
     return json.loads(safe.to_json(orient="records"))
+
+
+def _parse_threshold_sweep(value: str) -> list[float]:
+    thresholds = []
+    for raw in str(value).split(","):
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        thresholds.append(float(cleaned))
+    if not thresholds:
+        raise ValueError("threshold_sweep must contain at least one numeric threshold")
+    return sorted(set(thresholds))
+
+
+def _append_decision_journal(row: dict, path: str) -> None:
+    journal_path = Path(path)
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "snapshot_timestamp",
+        "decision",
+        "selected_count",
+        "selected_option_symbol",
+        "selected_selection_score",
+        "selected_mid",
+        "selected_delta",
+        "model_type",
+        "selection_orientation",
+        "min_entry_score",
+        "top_k",
+        "oos_auc",
+        "oos_auc_inverted",
+    ]
+    normalized_row = {k: row.get(k, "") for k in fieldnames}
+    existing_rows: list[dict] = []
+    if journal_path.exists() and journal_path.stat().st_size > 0:
+        with journal_path.open("r", encoding="utf-8", newline="") as f:
+            existing_rows = list(csv.DictReader(f))
+
+    dedupe_keys = (
+        str(normalized_row.get("snapshot_timestamp", "")),
+        str(normalized_row.get("model_type", "")),
+        str(normalized_row.get("selection_orientation", "")),
+        str(normalized_row.get("min_entry_score", "")),
+        str(normalized_row.get("top_k", "")),
+    )
+    filtered_rows = [
+        existing
+        for existing in existing_rows
+        if (
+            str(existing.get("snapshot_timestamp", "")),
+            str(existing.get("model_type", "")),
+            str(existing.get("selection_orientation", "")),
+            str(existing.get("min_entry_score", "")),
+            str(existing.get("top_k", "")),
+        ) != dedupe_keys
+    ]
+    filtered_rows.append(normalized_row)
+
+    with journal_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(filtered_rows)
 
 
 def _fit_current_model(
@@ -130,8 +195,10 @@ def build_current_candidate_report(
     min_entry_score: float = 0.30,
     top_k: int = 3,
     selection_orientation: str = "auto",
+    threshold_sweep: str = DEFAULT_THRESHOLD_SWEEP,
     output_path: str = DEFAULT_OUTPUT_PATH,
     csv_output_path: str = DEFAULT_CSV_OUTPUT_PATH,
+    journal_path: str = DEFAULT_JOURNAL_PATH,
 ) -> dict:
     latest = _load_snapshot_csv(latest_path)
     if latest.empty:
@@ -171,6 +238,7 @@ def build_current_candidate_report(
     scored = scored.sort_values([score_col, "candidate_score", "open_interest", "volume"], ascending=[False, False, False, False]).reset_index(drop=True)
     scored["rank"] = range(1, len(scored) + 1)
     scored["selected"] = (scored["rank"] <= int(top_k)) & (scored[score_col] >= float(min_entry_score))
+    threshold_values = _parse_threshold_sweep(threshold_sweep)
 
     cols = [
         "rank",
@@ -190,6 +258,31 @@ def build_current_candidate_report(
     ]
     export = scored[cols].copy()
     export = export.rename(columns={score_col: "selection_score"})
+    selected_export = export.loc[export["selected"]].copy()
+    decision = "no_trade"
+    selected_option_symbol = None
+    selected_selection_score = None
+    selected_mid = None
+    selected_delta = None
+    if not selected_export.empty:
+        decision = "select_contract"
+        top_selected = selected_export.iloc[0]
+        selected_option_symbol = str(top_selected["option_symbol"])
+        selected_selection_score = float(top_selected["selection_score"])
+        selected_mid = float(top_selected["mid"])
+        selected_delta = float(top_selected["delta"])
+
+    threshold_summary = []
+    for threshold in threshold_values:
+        eligible = export.loc[export["selection_score"] >= float(threshold)].copy()
+        threshold_summary.append(
+            {
+                "threshold": float(threshold),
+                "eligible_count": int(len(eligible)),
+                "top_option_symbol": str(eligible.iloc[0]["option_symbol"]) if not eligible.empty else None,
+                "top_selection_score": float(eligible.iloc[0]["selection_score"]) if not eligible.empty else None,
+            }
+        )
 
     report = {
         "history_path": history_path,
@@ -200,14 +293,20 @@ def build_current_candidate_report(
         "selection_score_col": "selection_score",
         "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
+        "decision": decision,
+        "selected_option_symbol": selected_option_symbol,
+        "selected_selection_score": selected_selection_score,
+        "selected_mid": selected_mid,
+        "selected_delta": selected_delta,
         "oos_auc": diagnostics["oos_auc"],
         "oos_auc_inverted": diagnostics["oos_auc_inverted"],
         "fold_count": diagnostics["fold_count"],
         "rows_model": diagnostics["rows_model"],
         "snapshot_count": diagnostics["snapshot_count"],
         "candidate_count": int(len(export)),
-        "selected_count": int(export["selected"].sum()),
-        "selected_candidates": _records_for_json(export.loc[export["selected"]]),
+        "selected_count": int(selected_export["selected"].sum()) if not selected_export.empty else 0,
+        "selected_candidates": _records_for_json(selected_export),
+        "threshold_summary": threshold_summary,
         "top_candidates": _records_for_json(export.head(max(int(top_k), 5))),
     }
 
@@ -215,6 +314,24 @@ def build_current_candidate_report(
     Path(output_path).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     Path(csv_output_path).parent.mkdir(parents=True, exist_ok=True)
     export.to_csv(csv_output_path, index=False)
+    _append_decision_journal(
+        {
+            "snapshot_timestamp": report["snapshot_timestamp"],
+            "decision": report["decision"],
+            "selected_count": report["selected_count"],
+            "selected_option_symbol": report["selected_option_symbol"],
+            "selected_selection_score": report["selected_selection_score"],
+            "selected_mid": report["selected_mid"],
+            "selected_delta": report["selected_delta"],
+            "model_type": report["model_type"],
+            "selection_orientation": report["selection_orientation"],
+            "min_entry_score": report["min_entry_score"],
+            "top_k": report["top_k"],
+            "oos_auc": report["oos_auc"],
+            "oos_auc_inverted": report["oos_auc_inverted"],
+        },
+        path=journal_path,
+    )
     return report
 
 
@@ -232,8 +349,10 @@ def main() -> None:
     parser.add_argument("--min-entry-score", type=float, default=0.30)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
+    parser.add_argument("--threshold-sweep", default=DEFAULT_THRESHOLD_SWEEP)
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--csv-output-path", default=DEFAULT_CSV_OUTPUT_PATH)
+    parser.add_argument("--journal-path", default=DEFAULT_JOURNAL_PATH)
     args = parser.parse_args()
 
     report = build_current_candidate_report(
@@ -249,8 +368,10 @@ def main() -> None:
         min_entry_score=args.min_entry_score,
         top_k=args.top_k,
         selection_orientation=args.selection_orientation,
+        threshold_sweep=args.threshold_sweep,
         output_path=args.output_path,
         csv_output_path=args.csv_output_path,
+        journal_path=args.journal_path,
     )
     print(json.dumps(report, indent=2, default=str))
 
