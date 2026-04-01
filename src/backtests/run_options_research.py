@@ -100,12 +100,7 @@ def repair_underlying_prices(df: pd.DataFrame) -> pd.DataFrame:
     return repaired.sort_values(["timestamp", "expiration", "strike", "option_type", "option_symbol"]).reset_index(drop=True)
 
 
-def prepare_option_research_frame(
-    df: pd.DataFrame,
-    horizon_bars: int,
-    target_return_pct: float,
-    max_adverse_return_pct: float,
-) -> tuple[pd.DataFrame, list[str]]:
+def build_option_feature_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     feat = make_option_features(df)
     feature_cols = [
         "days_to_expiry",
@@ -144,6 +139,17 @@ def prepare_option_research_frame(
     feat[fill_zero_cols] = feat[fill_zero_cols].fillna(0.0)
     feat["spread_rank_in_chain"] = feat["spread_rank_in_chain"].fillna(0.5)
     feat["oi_rank_in_chain"] = feat["oi_rank_in_chain"].fillna(0.5)
+    feat = feat.replace([np.inf, -np.inf], np.nan)
+    return feat, feature_cols
+
+
+def prepare_option_research_frame(
+    df: pd.DataFrame,
+    horizon_bars: int,
+    target_return_pct: float,
+    max_adverse_return_pct: float,
+) -> tuple[pd.DataFrame, list[str]]:
+    feat, feature_cols = build_option_feature_frame(df)
     feat["y"] = make_option_labels(
         feat,
         horizon_bars=horizon_bars,

@@ -94,12 +94,19 @@ Run starter walk-forward ML research on a chain snapshot CSV:
 ./.venv/bin/python -m src.backtests.run_options_research --csv-path centralized_data/options/SPY_put_chain_history.csv
 ```
 
+Write the current ML-ranked candidate report for the latest snapshot:
+
+```bash
+./.venv/bin/python -m src.options.current_candidate_report
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
 2. Watch `history_status` until the dataset has enough unique snapshots and contracts.
 3. Run the starter research workflow on the accumulated history.
-4. Use that output to decide whether to build a real options PnL backtest next.
+4. Run `current_candidate_report` to see which contract would be selected right now.
+5. Use that output to decide whether to build a real options PnL backtest next.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes
