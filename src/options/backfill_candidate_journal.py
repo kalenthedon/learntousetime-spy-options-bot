@@ -16,6 +16,8 @@ from src.backtests.run_options_research import (
     prepare_option_research_frame,
     load_option_chain_csv,
     resolve_selection_orientation,
+    simulate_option_selection_trades,
+    summarize_simulated_trades,
 )
 from src.ml.walkforward_train import WalkForwardRunConfig, walk_forward_train_predict
 
@@ -23,6 +25,8 @@ from src.ml.walkforward_train import WalkForwardRunConfig, walk_forward_train_pr
 DEFAULT_HISTORY_PATH = "centralized_data/options/SPY_put_chain_history.csv"
 DEFAULT_OUTPUT_PATH = "experiments/options_backfill_candidate_summary.json"
 DEFAULT_JOURNAL_PATH = "experiments/options_backfill_candidate_journal.csv"
+DEFAULT_THRESHOLD_SWEEP_PATH = "experiments/options_backfill_threshold_sweep.csv"
+DEFAULT_THRESHOLD_SWEEP = "0.01,0.02,0.03,0.05,0.10,0.15,0.20,0.30"
 
 
 def _prepare_research_frame(
@@ -74,6 +78,18 @@ def _longest_streak(values: list[bool], target: bool) -> int:
     return best
 
 
+def _parse_threshold_sweep(value: str) -> list[float]:
+    thresholds = []
+    for raw in str(value).split(","):
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        thresholds.append(float(cleaned))
+    if not thresholds:
+        raise ValueError("threshold_sweep must contain at least one numeric threshold")
+    return sorted(set(thresholds))
+
+
 def build_backfill_candidate_journal(
     history_path: str = DEFAULT_HISTORY_PATH,
     model_type: str = "logistic",
@@ -86,8 +102,10 @@ def build_backfill_candidate_journal(
     min_entry_score: float = 0.30,
     top_k: int = 3,
     selection_orientation: str = "auto",
+    threshold_sweep: str = DEFAULT_THRESHOLD_SWEEP,
     output_path: str = DEFAULT_OUTPUT_PATH,
     journal_path: str = DEFAULT_JOURNAL_PATH,
+    threshold_sweep_output_path: str = DEFAULT_THRESHOLD_SWEEP_PATH,
 ) -> dict:
     frame, feature_cols = _prepare_research_frame(
         history_path=history_path,
@@ -144,6 +162,7 @@ def build_backfill_candidate_journal(
     pred_df = pred_df.sort_values(["selection_time", score_col, "candidate_score"], ascending=[True, False, False]).copy()
     pred_df["rank"] = pred_df.groupby("selection_time")[score_col].rank(method="first", ascending=False)
     pred_df["selected"] = (pred_df["rank"] <= int(top_k)) & (pred_df[score_col] >= float(min_entry_score))
+    threshold_values = _parse_threshold_sweep(threshold_sweep)
 
     rows = []
     for selection_time, group in pred_df.groupby("selection_time", sort=True):
@@ -174,6 +193,41 @@ def build_backfill_candidate_journal(
 
     select_df = journal_df.loc[journal_df["decision"] == "select_contract"].copy()
     decisions = journal_df["decision"].eq("select_contract").tolist()
+    threshold_rows = []
+    for threshold in threshold_values:
+        threshold_trades = simulate_option_selection_trades(
+            frame=frame,
+            pred_df=pred_df,
+            score_col=score_col,
+            horizon_bars=horizon_bars,
+            target_return_pct=target_return_pct,
+            max_adverse_return_pct=max_adverse_return_pct,
+            min_entry_score=float(threshold),
+            top_k=top_k,
+            allow_overlapping_positions=False,
+            selection_group_col="selection_time",
+        )
+        trade_summary = summarize_simulated_trades(threshold_trades)
+        threshold_rows.append(
+            {
+                "threshold": float(threshold),
+                "decision_count": int((journal_df["top_selection_score"] >= float(threshold)).sum()),
+                "decision_rate": float((journal_df["top_selection_score"] >= float(threshold)).mean()),
+                "trade_count": int(trade_summary["trade_count"]),
+                "win_rate": trade_summary["win_rate"],
+                "avg_return_pct": trade_summary["avg_return_pct"],
+                "median_return_pct": trade_summary["median_return_pct"],
+                "total_return_pct": trade_summary["total_return_pct"],
+                "target_hit_rate": trade_summary["target_hit_rate"],
+                "stop_hit_rate": trade_summary["stop_hit_rate"],
+            }
+        )
+    threshold_df = pd.DataFrame(threshold_rows)
+    best_threshold_row = (
+        threshold_df.sort_values(["total_return_pct", "win_rate", "trade_count"], ascending=[False, False, False]).iloc[0].to_dict()
+        if not threshold_df.empty
+        else None
+    )
     summary = {
         "history_path": history_path,
         "model_type": model_type,
@@ -182,6 +236,7 @@ def build_backfill_candidate_journal(
         "selection_score_col": "selection_score",
         "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
+        "threshold_sweep": threshold_values,
         "oos_auc": float(diag.get("oos_auc")) if diag.get("oos_auc") is not None else None,
         "oos_auc_inverted": float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None,
         "fold_count": int(len(diag.get("fold_diags", []))),
@@ -200,6 +255,22 @@ def build_backfill_candidate_journal(
             if not select_df.empty
             else []
         ),
+        "default_threshold_trade_summary": summarize_simulated_trades(
+            simulate_option_selection_trades(
+                frame=frame,
+                pred_df=pred_df,
+                score_col=score_col,
+                horizon_bars=horizon_bars,
+                target_return_pct=target_return_pct,
+                max_adverse_return_pct=max_adverse_return_pct,
+                min_entry_score=float(min_entry_score),
+                top_k=top_k,
+                allow_overlapping_positions=False,
+                selection_group_col="selection_time",
+            )
+        ),
+        "threshold_trade_summary": _records_for_json(threshold_df),
+        "best_threshold_by_total_return": best_threshold_row,
         "journal_preview": _records_for_json(journal_df.head(10)),
     }
 
@@ -207,6 +278,8 @@ def build_backfill_candidate_journal(
     Path(output_path).write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     Path(journal_path).parent.mkdir(parents=True, exist_ok=True)
     journal_df.to_csv(journal_path, index=False)
+    Path(threshold_sweep_output_path).parent.mkdir(parents=True, exist_ok=True)
+    threshold_df.to_csv(threshold_sweep_output_path, index=False)
     return summary
 
 
@@ -223,8 +296,10 @@ def main() -> None:
     parser.add_argument("--min-entry-score", type=float, default=0.30)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
+    parser.add_argument("--threshold-sweep", default=DEFAULT_THRESHOLD_SWEEP)
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--journal-path", default=DEFAULT_JOURNAL_PATH)
+    parser.add_argument("--threshold-sweep-output-path", default=DEFAULT_THRESHOLD_SWEEP_PATH)
     args = parser.parse_args()
 
     summary = build_backfill_candidate_journal(
@@ -239,8 +314,10 @@ def main() -> None:
         min_entry_score=args.min_entry_score,
         top_k=args.top_k,
         selection_orientation=args.selection_orientation,
+        threshold_sweep=args.threshold_sweep,
         output_path=args.output_path,
         journal_path=args.journal_path,
+        threshold_sweep_output_path=args.threshold_sweep_output_path,
     )
     print(json.dumps(summary, indent=2, default=str))
 

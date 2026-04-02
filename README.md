@@ -105,6 +105,8 @@ This writes:
 - `experiments/options_current_candidates.csv`
 - `experiments/options_candidate_journal.csv`
 
+The JSON report also includes a `paper_trade_ready` flag based on the latest OOS diagnostics plus the historical threshold sweep.
+
 Backfill the selector across historical snapshots:
 
 ```bash
@@ -114,6 +116,7 @@ Backfill the selector across historical snapshots:
 This writes:
 - `experiments/options_backfill_candidate_summary.json`
 - `experiments/options_backfill_candidate_journal.csv`
+- `experiments/options_backfill_threshold_sweep.csv`
 
 ## Suggested Workflow
 
@@ -121,8 +124,8 @@ This writes:
 2. Watch `history_status` until the dataset has enough unique snapshots and contracts.
 3. Run the starter research workflow on the accumulated history.
 4. Run `current_candidate_report` to see which contract would be selected right now.
-5. Run `backfill_candidate_journal` to measure selector cadence and no-trade frequency over time.
-6. Use that output to decide whether to build a real options PnL backtest next.
+5. Run `backfill_candidate_journal` to measure selector cadence, no-trade frequency, and threshold-level trade quality over time.
+6. Use the threshold sweep output to choose a score threshold before building a lightweight paper selector.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes

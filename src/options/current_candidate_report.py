@@ -29,6 +29,7 @@ DEFAULT_OUTPUT_PATH = "experiments/options_current_candidates.json"
 DEFAULT_CSV_OUTPUT_PATH = "experiments/options_current_candidates.csv"
 DEFAULT_JOURNAL_PATH = "experiments/options_candidate_journal.csv"
 DEFAULT_THRESHOLD_SWEEP = "0.01,0.02,0.03,0.05,0.10,0.15,0.20,0.30"
+DEFAULT_BACKFILL_SUMMARY_PATH = "experiments/options_backfill_candidate_summary.json"
 
 
 def _load_snapshot_csv(path: str) -> pd.DataFrame:
@@ -36,6 +37,22 @@ def _load_snapshot_csv(path: str) -> pd.DataFrame:
     if not csv_path.exists() or csv_path.stat().st_size == 0:
         return pd.DataFrame()
     return normalize_option_chain_frame(pd.read_csv(csv_path))
+
+
+def _latest_snapshot_from_history(history_path: str) -> pd.DataFrame:
+    history = load_option_chain_csv(history_path)
+    if history.empty:
+        return pd.DataFrame()
+    if "collected_at" in history.columns:
+        snapshot_time = pd.to_datetime(history["collected_at"], utc=True, errors="coerce")
+    else:
+        snapshot_time = pd.to_datetime(history["timestamp"], utc=True, errors="coerce").dt.floor("15min")
+    history = history.assign(_snapshot_time=snapshot_time).dropna(subset=["_snapshot_time"]).copy()
+    if history.empty:
+        return pd.DataFrame()
+    latest_snapshot_time = history["_snapshot_time"].max()
+    latest = history.loc[history["_snapshot_time"] == latest_snapshot_time].drop(columns=["_snapshot_time"]).copy()
+    return latest.reset_index(drop=True)
 
 
 def _records_for_json(df: pd.DataFrame) -> list[dict]:
@@ -58,6 +75,53 @@ def _parse_threshold_sweep(value: str) -> list[float]:
     if not thresholds:
         raise ValueError("threshold_sweep must contain at least one numeric threshold")
     return sorted(set(thresholds))
+
+
+def _load_backfill_summary(path: str) -> dict | None:
+    summary_path = Path(path)
+    if not summary_path.exists() or summary_path.stat().st_size == 0:
+        return None
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
+def _resolve_historical_threshold_context(summary: dict | None, threshold: float) -> dict | None:
+    if not summary:
+        return None
+    threshold_rows = summary.get("threshold_trade_summary") or []
+    if not threshold_rows:
+        return None
+    chosen = min(threshold_rows, key=lambda row: abs(float(row.get("threshold", 0.0)) - float(threshold)))
+    return {
+        "threshold": float(chosen.get("threshold", 0.0)),
+        "decision_rate": chosen.get("decision_rate"),
+        "trade_count": chosen.get("trade_count"),
+        "win_rate": chosen.get("win_rate"),
+        "avg_return_pct": chosen.get("avg_return_pct"),
+        "median_return_pct": chosen.get("median_return_pct"),
+        "total_return_pct": chosen.get("total_return_pct"),
+        "target_hit_rate": chosen.get("target_hit_rate"),
+        "stop_hit_rate": chosen.get("stop_hit_rate"),
+    }
+
+
+def _paper_trade_readiness(
+    diagnostics: dict,
+    historical_threshold_context: dict | None,
+    min_historical_trades: int,
+) -> tuple[bool, str]:
+    if diagnostics.get("oos_auc") is None:
+        return False, "missing_oos_auc"
+    if float(diagnostics["oos_auc"]) < 0.55:
+        return False, "oos_auc_below_threshold"
+    if not historical_threshold_context:
+        return False, "missing_backfill_threshold_context"
+    if int(historical_threshold_context.get("trade_count") or 0) < int(min_historical_trades):
+        return False, "insufficient_historical_trades"
+    if historical_threshold_context.get("total_return_pct") is None:
+        return False, "missing_historical_return_data"
+    if float(historical_threshold_context["total_return_pct"]) <= 0.0:
+        return False, "historical_threshold_not_profitable"
+    return True, "historical_threshold_profitable"
 
 
 def _append_decision_journal(row: dict, path: str) -> None:
@@ -196,13 +260,19 @@ def build_current_candidate_report(
     top_k: int = 3,
     selection_orientation: str = "auto",
     threshold_sweep: str = DEFAULT_THRESHOLD_SWEEP,
+    backfill_summary_path: str = DEFAULT_BACKFILL_SUMMARY_PATH,
+    min_historical_trades_for_ready: int = 5,
     output_path: str = DEFAULT_OUTPUT_PATH,
     csv_output_path: str = DEFAULT_CSV_OUTPUT_PATH,
     journal_path: str = DEFAULT_JOURNAL_PATH,
 ) -> dict:
     latest = _load_snapshot_csv(latest_path)
     if latest.empty:
-        raise RuntimeError(f"No latest option snapshot rows found at {latest_path}")
+        latest = _latest_snapshot_from_history(history_path)
+    if latest.empty:
+        raise RuntimeError(
+            f"No latest option snapshot rows found at {latest_path}, and no usable latest snapshot could be derived from {history_path}"
+        )
 
     model, feature_cols, diagnostics = _fit_current_model(
         history_path=history_path,
@@ -283,6 +353,15 @@ def build_current_candidate_report(
                 "top_selection_score": float(eligible.iloc[0]["selection_score"]) if not eligible.empty else None,
             }
         )
+    historical_threshold_context = _resolve_historical_threshold_context(
+        _load_backfill_summary(backfill_summary_path),
+        min_entry_score,
+    )
+    paper_trade_ready, paper_trade_readiness_reason = _paper_trade_readiness(
+        diagnostics=diagnostics,
+        historical_threshold_context=historical_threshold_context,
+        min_historical_trades=min_historical_trades_for_ready,
+    )
 
     report = {
         "history_path": history_path,
@@ -298,6 +377,9 @@ def build_current_candidate_report(
         "selected_selection_score": selected_selection_score,
         "selected_mid": selected_mid,
         "selected_delta": selected_delta,
+        "paper_trade_ready": paper_trade_ready,
+        "paper_trade_readiness_reason": paper_trade_readiness_reason,
+        "historical_threshold_context": historical_threshold_context,
         "oos_auc": diagnostics["oos_auc"],
         "oos_auc_inverted": diagnostics["oos_auc_inverted"],
         "fold_count": diagnostics["fold_count"],
@@ -350,6 +432,8 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
     parser.add_argument("--threshold-sweep", default=DEFAULT_THRESHOLD_SWEEP)
+    parser.add_argument("--backfill-summary-path", default=DEFAULT_BACKFILL_SUMMARY_PATH)
+    parser.add_argument("--min-historical-trades-for-ready", type=int, default=5)
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--csv-output-path", default=DEFAULT_CSV_OUTPUT_PATH)
     parser.add_argument("--journal-path", default=DEFAULT_JOURNAL_PATH)
@@ -369,6 +453,8 @@ def main() -> None:
         top_k=args.top_k,
         selection_orientation=args.selection_orientation,
         threshold_sweep=args.threshold_sweep,
+        backfill_summary_path=args.backfill_summary_path,
+        min_historical_trades_for_ready=args.min_historical_trades_for_ready,
         output_path=args.output_path,
         csv_output_path=args.csv_output_path,
         journal_path=args.journal_path,
