@@ -119,6 +119,16 @@ This writes:
 - `experiments/options_backfill_candidate_journal.csv`
 - `experiments/options_backfill_threshold_sweep.csv`
 
+Run one lightweight paper-selector cycle:
+
+```bash
+./.venv/bin/python -m src.options.paper_selector_cycle
+```
+
+This writes:
+- `experiments/options_paper_selector_latest.json`
+- `experiments/options_paper_selector_journal.csv`
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
@@ -126,7 +136,7 @@ This writes:
 3. Run the starter research workflow on the accumulated history.
 4. Run `current_candidate_report` to see which contract would be selected right now.
 5. Run `backfill_candidate_journal` to measure selector cadence, no-trade frequency, and threshold-level trade quality over time.
-6. Use the threshold sweep output to choose a score threshold before building a lightweight paper selector.
+6. Run `paper_selector_cycle` on each collection interval to record the actual paper-selection decision stream.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes

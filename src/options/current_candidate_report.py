@@ -352,6 +352,7 @@ def build_current_candidate_report(
     selected_selection_score = None
     selected_mid = None
     selected_delta = None
+    decision_reason = "no_candidate_rows_after_filters"
     if not selected_export.empty:
         decision = "select_contract"
         top_selected = selected_export.iloc[0]
@@ -359,6 +360,13 @@ def build_current_candidate_report(
         selected_selection_score = float(top_selected["selection_score"])
         selected_mid = float(top_selected["mid"])
         selected_delta = float(top_selected["delta"])
+        decision_reason = "candidate_above_threshold"
+    elif not export.empty:
+        top_candidate = export.iloc[0]
+        decision_reason = (
+            f"top_score_below_threshold:{float(top_candidate['selection_score']):.4f}"
+            f"<{float(min_entry_score):.4f}"
+        )
 
     threshold_summary = []
     for threshold in threshold_values:
@@ -395,6 +403,7 @@ def build_current_candidate_report(
         "min_abs_delta": float(min_abs_delta),
         "max_days_to_expiry": float(max_days_to_expiry),
         "decision": decision,
+        "decision_reason": decision_reason,
         "selected_option_symbol": selected_option_symbol,
         "selected_selection_score": selected_selection_score,
         "selected_mid": selected_mid,
