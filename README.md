@@ -106,6 +106,7 @@ This writes:
 - `experiments/options_candidate_journal.csv`
 
 The JSON report also includes a `paper_trade_ready` flag based on the latest OOS diagnostics plus the historical threshold sweep.
+The default selector now uses a stricter operational filter set: `min_entry_score=0.10`, `min_open_interest=100`, `max_spread_pct=0.12`, `min_abs_delta=0.25`, and `max_days_to_expiry=10`.
 
 Backfill the selector across historical snapshots:
 

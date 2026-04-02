@@ -12,7 +12,14 @@ if __package__ is None or __package__ == "":
 
 from src.backtests.run_options_research import (
     apply_selection_orientation,
+    apply_selection_contract_filters,
     build_model_factory,
+    DEFAULT_SELECTOR_MAX_DTE,
+    DEFAULT_SELECTOR_MAX_SPREAD_PCT,
+    DEFAULT_SELECTOR_MIN_ABS_DELTA,
+    DEFAULT_SELECTOR_MIN_ENTRY_SCORE,
+    DEFAULT_SELECTOR_MIN_OPEN_INTEREST,
+    DEFAULT_SELECTOR_TOP_K,
     prepare_option_research_frame,
     load_option_chain_csv,
     resolve_selection_orientation,
@@ -99,8 +106,12 @@ def build_backfill_candidate_journal(
     horizon_bars: int = 8,
     target_return_pct: float = 0.25,
     max_adverse_return_pct: float = -0.20,
-    min_entry_score: float = 0.30,
-    top_k: int = 3,
+    min_entry_score: float = DEFAULT_SELECTOR_MIN_ENTRY_SCORE,
+    top_k: int = DEFAULT_SELECTOR_TOP_K,
+    min_open_interest: float = DEFAULT_SELECTOR_MIN_OPEN_INTEREST,
+    max_spread_pct: float = DEFAULT_SELECTOR_MAX_SPREAD_PCT,
+    min_abs_delta: float = DEFAULT_SELECTOR_MIN_ABS_DELTA,
+    max_days_to_expiry: float = DEFAULT_SELECTOR_MAX_DTE,
     selection_orientation: str = "auto",
     threshold_sweep: str = DEFAULT_THRESHOLD_SWEEP,
     output_path: str = DEFAULT_OUTPUT_PATH,
@@ -149,6 +160,9 @@ def build_backfill_candidate_journal(
                 "open_interest",
                 "volume",
                 "candidate_score",
+                "liquidity_score",
+                "spread_pct_mid",
+                "delta_abs",
             ]
         ]
     )
@@ -159,6 +173,13 @@ def build_backfill_candidate_journal(
         float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None,
     )
     pred_df, score_col = apply_selection_orientation(pred_df, proba_col=proba_col, orientation=resolved_orientation)
+    pred_df = apply_selection_contract_filters(
+        pred_df,
+        min_open_interest=min_open_interest,
+        max_spread_pct=max_spread_pct,
+        min_abs_delta=min_abs_delta,
+        max_days_to_expiry=max_days_to_expiry,
+    )
     pred_df = pred_df.sort_values(["selection_time", score_col, "candidate_score"], ascending=[True, False, False]).copy()
     pred_df["rank"] = pred_df.groupby("selection_time")[score_col].rank(method="first", ascending=False)
     pred_df["selected"] = (pred_df["rank"] <= int(top_k)) & (pred_df[score_col] >= float(min_entry_score))
@@ -236,6 +257,10 @@ def build_backfill_candidate_journal(
         "selection_score_col": "selection_score",
         "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
+        "min_open_interest": float(min_open_interest),
+        "max_spread_pct": float(max_spread_pct),
+        "min_abs_delta": float(min_abs_delta),
+        "max_days_to_expiry": float(max_days_to_expiry),
         "threshold_sweep": threshold_values,
         "oos_auc": float(diag.get("oos_auc")) if diag.get("oos_auc") is not None else None,
         "oos_auc_inverted": float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None,
@@ -293,8 +318,12 @@ def main() -> None:
     parser.add_argument("--horizon-bars", type=int, default=8)
     parser.add_argument("--target-return-pct", type=float, default=0.25)
     parser.add_argument("--max-adverse-return-pct", type=float, default=-0.20)
-    parser.add_argument("--min-entry-score", type=float, default=0.30)
-    parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--min-entry-score", type=float, default=DEFAULT_SELECTOR_MIN_ENTRY_SCORE)
+    parser.add_argument("--top-k", type=int, default=DEFAULT_SELECTOR_TOP_K)
+    parser.add_argument("--min-open-interest", type=float, default=DEFAULT_SELECTOR_MIN_OPEN_INTEREST)
+    parser.add_argument("--max-spread-pct", type=float, default=DEFAULT_SELECTOR_MAX_SPREAD_PCT)
+    parser.add_argument("--min-abs-delta", type=float, default=DEFAULT_SELECTOR_MIN_ABS_DELTA)
+    parser.add_argument("--max-days-to-expiry", type=float, default=DEFAULT_SELECTOR_MAX_DTE)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
     parser.add_argument("--threshold-sweep", default=DEFAULT_THRESHOLD_SWEEP)
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
@@ -313,6 +342,10 @@ def main() -> None:
         max_adverse_return_pct=args.max_adverse_return_pct,
         min_entry_score=args.min_entry_score,
         top_k=args.top_k,
+        min_open_interest=args.min_open_interest,
+        max_spread_pct=args.max_spread_pct,
+        min_abs_delta=args.min_abs_delta,
+        max_days_to_expiry=args.max_days_to_expiry,
         selection_orientation=args.selection_orientation,
         threshold_sweep=args.threshold_sweep,
         output_path=args.output_path,

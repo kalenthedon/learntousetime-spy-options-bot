@@ -13,8 +13,15 @@ if __package__ is None or __package__ == "":
 
 from src.backtests.run_options_research import (
     apply_selection_orientation,
+    apply_selection_contract_filters,
     build_model_factory,
     build_option_feature_frame,
+    DEFAULT_SELECTOR_MAX_DTE,
+    DEFAULT_SELECTOR_MAX_SPREAD_PCT,
+    DEFAULT_SELECTOR_MIN_ABS_DELTA,
+    DEFAULT_SELECTOR_MIN_ENTRY_SCORE,
+    DEFAULT_SELECTOR_MIN_OPEN_INTEREST,
+    DEFAULT_SELECTOR_TOP_K,
     load_option_chain_csv,
     prepare_option_research_frame,
     resolve_selection_orientation,
@@ -256,8 +263,12 @@ def build_current_candidate_report(
     horizon_bars: int = 8,
     target_return_pct: float = 0.25,
     max_adverse_return_pct: float = -0.20,
-    min_entry_score: float = 0.30,
-    top_k: int = 3,
+    min_entry_score: float = DEFAULT_SELECTOR_MIN_ENTRY_SCORE,
+    top_k: int = DEFAULT_SELECTOR_TOP_K,
+    min_open_interest: float = DEFAULT_SELECTOR_MIN_OPEN_INTEREST,
+    max_spread_pct: float = DEFAULT_SELECTOR_MAX_SPREAD_PCT,
+    min_abs_delta: float = DEFAULT_SELECTOR_MIN_ABS_DELTA,
+    max_days_to_expiry: float = DEFAULT_SELECTOR_MAX_DTE,
     selection_orientation: str = "auto",
     threshold_sweep: str = DEFAULT_THRESHOLD_SWEEP,
     backfill_summary_path: str = DEFAULT_BACKFILL_SUMMARY_PATH,
@@ -304,6 +315,13 @@ def build_current_candidate_report(
         scored,
         proba_col="proba_raw",
         orientation=diagnostics["selection_orientation"],
+    )
+    scored = apply_selection_contract_filters(
+        scored,
+        min_open_interest=min_open_interest,
+        max_spread_pct=max_spread_pct,
+        min_abs_delta=min_abs_delta,
+        max_days_to_expiry=max_days_to_expiry,
     )
     scored = scored.sort_values([score_col, "candidate_score", "open_interest", "volume"], ascending=[False, False, False, False]).reset_index(drop=True)
     scored["rank"] = range(1, len(scored) + 1)
@@ -372,6 +390,10 @@ def build_current_candidate_report(
         "selection_score_col": "selection_score",
         "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
+        "min_open_interest": float(min_open_interest),
+        "max_spread_pct": float(max_spread_pct),
+        "min_abs_delta": float(min_abs_delta),
+        "max_days_to_expiry": float(max_days_to_expiry),
         "decision": decision,
         "selected_option_symbol": selected_option_symbol,
         "selected_selection_score": selected_selection_score,
@@ -428,8 +450,12 @@ def main() -> None:
     parser.add_argument("--horizon-bars", type=int, default=8)
     parser.add_argument("--target-return-pct", type=float, default=0.25)
     parser.add_argument("--max-adverse-return-pct", type=float, default=-0.20)
-    parser.add_argument("--min-entry-score", type=float, default=0.30)
-    parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--min-entry-score", type=float, default=DEFAULT_SELECTOR_MIN_ENTRY_SCORE)
+    parser.add_argument("--top-k", type=int, default=DEFAULT_SELECTOR_TOP_K)
+    parser.add_argument("--min-open-interest", type=float, default=DEFAULT_SELECTOR_MIN_OPEN_INTEREST)
+    parser.add_argument("--max-spread-pct", type=float, default=DEFAULT_SELECTOR_MAX_SPREAD_PCT)
+    parser.add_argument("--min-abs-delta", type=float, default=DEFAULT_SELECTOR_MIN_ABS_DELTA)
+    parser.add_argument("--max-days-to-expiry", type=float, default=DEFAULT_SELECTOR_MAX_DTE)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
     parser.add_argument("--threshold-sweep", default=DEFAULT_THRESHOLD_SWEEP)
     parser.add_argument("--backfill-summary-path", default=DEFAULT_BACKFILL_SUMMARY_PATH)
@@ -451,6 +477,10 @@ def main() -> None:
         max_adverse_return_pct=args.max_adverse_return_pct,
         min_entry_score=args.min_entry_score,
         top_k=args.top_k,
+        min_open_interest=args.min_open_interest,
+        max_spread_pct=args.max_spread_pct,
+        min_abs_delta=args.min_abs_delta,
+        max_days_to_expiry=args.max_days_to_expiry,
         selection_orientation=args.selection_orientation,
         threshold_sweep=args.threshold_sweep,
         backfill_summary_path=args.backfill_summary_path,

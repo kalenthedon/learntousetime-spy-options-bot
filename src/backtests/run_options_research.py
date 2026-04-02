@@ -25,6 +25,12 @@ from src.options.labels import make_option_labels
 
 DEFAULT_OUTPUT_PATH = "experiments/options_research_summary.json"
 DEFAULT_TRADES_OUTPUT_PATH = "experiments/options_research_trades.csv"
+DEFAULT_SELECTOR_MIN_ENTRY_SCORE = 0.10
+DEFAULT_SELECTOR_TOP_K = 3
+DEFAULT_SELECTOR_MIN_OPEN_INTEREST = 100.0
+DEFAULT_SELECTOR_MAX_SPREAD_PCT = 0.12
+DEFAULT_SELECTOR_MIN_ABS_DELTA = 0.25
+DEFAULT_SELECTOR_MAX_DTE = 10.0
 
 
 def resolve_selection_orientation(
@@ -49,6 +55,31 @@ def apply_selection_orientation(pred_df: pd.DataFrame, proba_col: str, orientati
         return oriented, "selection_score"
     oriented["selection_score"] = oriented[proba_col].astype(float)
     return oriented, "selection_score"
+
+
+def apply_selection_contract_filters(
+    pred_df: pd.DataFrame,
+    min_open_interest: float = DEFAULT_SELECTOR_MIN_OPEN_INTEREST,
+    max_spread_pct: float = DEFAULT_SELECTOR_MAX_SPREAD_PCT,
+    min_abs_delta: float = DEFAULT_SELECTOR_MIN_ABS_DELTA,
+    max_days_to_expiry: float = DEFAULT_SELECTOR_MAX_DTE,
+) -> pd.DataFrame:
+    filtered = pred_df.copy()
+    masks = []
+    if "open_interest" in filtered.columns:
+        masks.append(filtered["open_interest"].astype(float) >= float(min_open_interest))
+    if "spread_pct_mid" in filtered.columns:
+        masks.append(filtered["spread_pct_mid"].astype(float) <= float(max_spread_pct))
+    if "delta_abs" in filtered.columns:
+        masks.append(filtered["delta_abs"].astype(float) >= float(min_abs_delta))
+    if "days_to_expiry" in filtered.columns:
+        masks.append(filtered["days_to_expiry"].astype(float) <= float(max_days_to_expiry))
+    if not masks:
+        return filtered
+    combined_mask = masks[0]
+    for mask in masks[1:]:
+        combined_mask &= mask
+    return filtered.loc[combined_mask].copy()
 
 
 def load_option_chain_csv(path: str) -> pd.DataFrame:
@@ -358,6 +389,10 @@ def run_options_research(
     max_adverse_return_pct: float,
     min_entry_score: float,
     top_k: int,
+    min_open_interest: float,
+    max_spread_pct: float,
+    min_abs_delta: float,
+    max_days_to_expiry: float,
     allow_overlapping_positions: bool,
     selection_orientation: str = "auto",
     output_path: str = DEFAULT_OUTPUT_PATH,
@@ -426,6 +461,13 @@ def run_options_research(
     oos_auc_inverted = float(diag.get("oos_auc_inverted")) if diag.get("oos_auc_inverted") is not None else None
     resolved_selection_orientation = resolve_selection_orientation(selection_orientation, auc, oos_auc_inverted)
     pred_df, score_col = apply_selection_orientation(pred_df, proba_col=proba_col, orientation=resolved_selection_orientation)
+    pred_df = apply_selection_contract_filters(
+        pred_df,
+        min_open_interest=min_open_interest,
+        max_spread_pct=max_spread_pct,
+        min_abs_delta=min_abs_delta,
+        max_days_to_expiry=max_days_to_expiry,
+    )
 
     summary = {
         "csv_path": csv_path,
@@ -446,6 +488,7 @@ def run_options_research(
         "oos_auc_inverted": oos_auc_inverted,
         "oos_logloss": ll,
         "oos_positive_rate": float(pred_df["y_true"].mean()) if not pred_df.empty else None,
+        "rows_after_selection_filters": int(len(pred_df)),
         "top_contract_summary": summarize_top_contracts(
             pred_df,
             score_col=score_col,
@@ -487,6 +530,10 @@ def run_options_research(
     summary["selection_rules"] = {
         "min_entry_score": float(min_entry_score),
         "top_k": int(top_k),
+        "min_open_interest": float(min_open_interest),
+        "max_spread_pct": float(max_spread_pct),
+        "min_abs_delta": float(min_abs_delta),
+        "max_days_to_expiry": float(max_days_to_expiry),
         "allow_overlapping_positions": bool(allow_overlapping_positions),
         "horizon_bars": int(horizon_bars),
         "target_return_pct": float(target_return_pct),
@@ -511,8 +558,12 @@ def main() -> None:
     parser.add_argument("--horizon-bars", type=int, default=8)
     parser.add_argument("--target-return-pct", type=float, default=0.25)
     parser.add_argument("--max-adverse-return-pct", type=float, default=-0.20)
-    parser.add_argument("--min-entry-score", type=float, default=0.30)
-    parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--min-entry-score", type=float, default=DEFAULT_SELECTOR_MIN_ENTRY_SCORE)
+    parser.add_argument("--top-k", type=int, default=DEFAULT_SELECTOR_TOP_K)
+    parser.add_argument("--min-open-interest", type=float, default=DEFAULT_SELECTOR_MIN_OPEN_INTEREST)
+    parser.add_argument("--max-spread-pct", type=float, default=DEFAULT_SELECTOR_MAX_SPREAD_PCT)
+    parser.add_argument("--min-abs-delta", type=float, default=DEFAULT_SELECTOR_MIN_ABS_DELTA)
+    parser.add_argument("--max-days-to-expiry", type=float, default=DEFAULT_SELECTOR_MAX_DTE)
     parser.add_argument("--selection-orientation", choices=["auto", "raw", "inverted"], default="auto")
     parser.add_argument("--allow-overlapping-positions", action="store_true")
     parser.add_argument("--output-path", default=DEFAULT_OUTPUT_PATH)
@@ -530,6 +581,10 @@ def main() -> None:
         max_adverse_return_pct=args.max_adverse_return_pct,
         min_entry_score=args.min_entry_score,
         top_k=args.top_k,
+        min_open_interest=args.min_open_interest,
+        max_spread_pct=args.max_spread_pct,
+        min_abs_delta=args.min_abs_delta,
+        max_days_to_expiry=args.max_days_to_expiry,
         allow_overlapping_positions=args.allow_overlapping_positions,
         selection_orientation=args.selection_orientation,
         output_path=args.output_path,
