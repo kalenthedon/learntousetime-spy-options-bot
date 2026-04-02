@@ -105,13 +105,24 @@ This writes:
 - `experiments/options_current_candidates.csv`
 - `experiments/options_candidate_journal.csv`
 
+Backfill the selector across historical snapshots:
+
+```bash
+./.venv/bin/python -m src.options.backfill_candidate_journal
+```
+
+This writes:
+- `experiments/options_backfill_candidate_summary.json`
+- `experiments/options_backfill_candidate_journal.csv`
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
 2. Watch `history_status` until the dataset has enough unique snapshots and contracts.
 3. Run the starter research workflow on the accumulated history.
 4. Run `current_candidate_report` to see which contract would be selected right now.
-5. Use that output to decide whether to build a real options PnL backtest next.
+5. Run `backfill_candidate_journal` to measure selector cadence and no-trade frequency over time.
+6. Use that output to decide whether to build a real options PnL backtest next.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes
