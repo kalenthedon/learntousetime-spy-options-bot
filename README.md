@@ -128,6 +128,8 @@ Run one lightweight paper-selector cycle:
 This writes:
 - `experiments/options_paper_selector_latest.json`
 - `experiments/options_paper_selector_journal.csv`
+- `experiments/options_paper_portfolio_state.json`
+- `experiments/options_paper_portfolio_journal.csv`
 
 ## Suggested Workflow
 

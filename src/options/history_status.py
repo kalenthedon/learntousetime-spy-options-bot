@@ -50,6 +50,7 @@ def build_status() -> dict:
         selector_payload = json.loads(PAPER_SELECTOR_LATEST_PATH.read_text(encoding="utf-8"))
         report = selector_payload.get("report", {}) or {}
         collect_result = selector_payload.get("collect_result", {}) or {}
+        portfolio = selector_payload.get("portfolio", {}) or {}
         selector_status = {
             "cycle_timestamp": selector_payload.get("cycle_timestamp"),
             "collect_status": collect_result.get("status"),
@@ -61,6 +62,10 @@ def build_status() -> dict:
             "selected_option_symbol": report.get("selected_option_symbol"),
             "selected_selection_score": report.get("selected_selection_score"),
             "snapshot_timestamp": report.get("snapshot_timestamp"),
+            "portfolio_open_symbol": (portfolio.get("open_position") or {}).get("option_symbol"),
+            "portfolio_unrealized_pnl": (portfolio.get("open_position") or {}).get("unrealized_pnl"),
+            "portfolio_realized_pnl": portfolio.get("realized_pnl"),
+            "portfolio_closed_positions": portfolio.get("closed_positions"),
         }
 
     return {
@@ -121,6 +126,12 @@ def render_report(status: dict) -> str:
                 f"decision_reason={selector.get('decision_reason') or 'n/a'}"
                 f" | readiness_reason={selector.get('paper_trade_readiness_reason') or 'n/a'}"
             )
+        lines.append(
+            " - "
+            f"portfolio_open={selector.get('portfolio_open_symbol') or 'none'}"
+            f" | realized_pnl={selector.get('portfolio_realized_pnl') if selector.get('portfolio_realized_pnl') is not None else 'n/a'}"
+            f" | closed_positions={selector.get('portfolio_closed_positions') if selector.get('portfolio_closed_positions') is not None else 'n/a'}"
+        )
     return "\n".join(lines)
 
 
