@@ -18,7 +18,6 @@ Current first path:
 
 ## What This Repo Does Not Do Yet
 
-- paper trade options
 - place live options orders
 - model assignment / exercise risk
 - run a full production-grade options PnL and fill simulator
@@ -131,6 +130,18 @@ This writes:
 - `experiments/options_paper_portfolio_state.json`
 - `experiments/options_paper_portfolio_journal.csv`
 
+Run the paper selector continuously on a 15-minute interval:
+
+```bash
+./.venv/bin/python -m src.options.paper_selector_daemon --run-immediately
+```
+
+Check the current paper portfolio status:
+
+```bash
+./.venv/bin/python -m src.options.paper_portfolio_status
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
@@ -139,6 +150,7 @@ This writes:
 4. Run `current_candidate_report` to see which contract would be selected right now.
 5. Run `backfill_candidate_journal` to measure selector cadence, no-trade frequency, and threshold-level trade quality over time.
 6. Run `paper_selector_cycle` on each collection interval to record the actual paper-selection decision stream.
+7. Use `paper_selector_daemon` for unattended market-hours paper runs and `paper_portfolio_status` to monitor the portfolio state.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes
