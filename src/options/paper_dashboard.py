@@ -5,6 +5,7 @@ import html
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import ssl
 import sys
 
 if __package__ is None or __package__ == "":
@@ -234,10 +235,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Serve a live SPY options paper-trading dashboard.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8797)
+    parser.add_argument("--certfile", default=None)
+    parser.add_argument("--keyfile", default=None)
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
-    print(f"dashboard_listen=http://{args.host}:{args.port}")
+    scheme = "http"
+    if bool(args.certfile) != bool(args.keyfile):
+        raise ValueError("Provide both --certfile and --keyfile to enable HTTPS.")
+    if args.certfile and args.keyfile:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=args.certfile, keyfile=args.keyfile)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    print(f"dashboard_listen={scheme}://{args.host}:{args.port}")
     server.serve_forever()
 
 

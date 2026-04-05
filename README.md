@@ -154,6 +154,12 @@ Run the at-a-glance paper dashboard:
 ./.venv/bin/python -m src.options.paper_dashboard
 ```
 
+Default is plain HTTP. If you want HTTPS, provide a certificate and key:
+
+```bash
+./.venv/bin/python -m src.options.paper_dashboard --certfile path/to/cert.pem --keyfile path/to/key.pem
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
