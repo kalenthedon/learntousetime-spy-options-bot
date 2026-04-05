@@ -142,6 +142,12 @@ Check the current paper portfolio status:
 ./.venv/bin/python -m src.options.paper_portfolio_status
 ```
 
+Check a combined paper-ops summary:
+
+```bash
+./.venv/bin/python -m src.options.paper_ops_status
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.

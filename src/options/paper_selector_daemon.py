@@ -75,6 +75,7 @@ def main() -> None:
     parser.add_argument("--interval-minutes", type=int, default=15)
     parser.add_argument("--delay-seconds", type=int, default=30)
     parser.add_argument("--run-immediately", action="store_true")
+    parser.add_argument("--max-cycles", type=int, default=0)
     parser.add_argument("--no-collect", action="store_true")
     args = parser.parse_args()
 
@@ -112,8 +113,13 @@ def main() -> None:
             collect_snapshot=not args.no_collect,
         )
 
+    cycles_completed = 0
+
     if args.run_immediately:
         print(json.dumps(_run_once(), indent=2, default=str))
+        cycles_completed += 1
+        if args.max_cycles and cycles_completed >= args.max_cycles:
+            return
 
     while True:
         sleep_seconds = seconds_until_next_interval(args.interval_minutes, args.delay_seconds)
@@ -121,6 +127,9 @@ def main() -> None:
         time.sleep(sleep_seconds)
         try:
             print(json.dumps(_run_once(), indent=2, default=str))
+            cycles_completed += 1
+            if args.max_cycles and cycles_completed >= args.max_cycles:
+                return
         except Exception as exc:
             print(f"[options-paper-daemon] cycle failed: {exc}")
             time.sleep(60)
