@@ -148,6 +148,12 @@ Check a combined paper-ops summary:
 ./.venv/bin/python -m src.options.paper_ops_status
 ```
 
+Run the at-a-glance paper dashboard:
+
+```bash
+./.venv/bin/python -m src.options.paper_dashboard
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
