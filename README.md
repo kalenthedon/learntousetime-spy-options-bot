@@ -160,6 +160,13 @@ Default is plain HTTP. If you want HTTPS, provide a certificate and key:
 ./.venv/bin/python -m src.options.paper_dashboard --certfile path/to/cert.pem --keyfile path/to/key.pem
 ```
 
+The repo shell aliases include a ready-made HTTPS launcher once you source `project_aliases.zsh`:
+
+```bash
+source project_aliases.zsh
+ltut-opt-dashboard
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
