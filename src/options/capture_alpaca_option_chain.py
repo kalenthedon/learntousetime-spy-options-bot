@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -20,6 +21,7 @@ from src.options.universe import filter_long_put_candidates, score_long_put_cand
 
 
 DEFAULT_OUTPUT_PATH = "centralized_data/options/SPY_put_chain_latest.csv"
+US_EASTERN = ZoneInfo("America/New_York")
 
 
 def capture_spy_long_put_chain(
@@ -27,7 +29,7 @@ def capture_spy_long_put_chain(
     expiration_window_days: tuple[int, int] = (7, 21),
     output_path: str = DEFAULT_OUTPUT_PATH,
 ) -> pd.DataFrame:
-    today = date.today()
+    today = datetime.now(US_EASTERN).date()
     exp_gte = today + timedelta(days=expiration_window_days[0])
     exp_lte = today + timedelta(days=expiration_window_days[1])
 
@@ -59,6 +61,8 @@ def capture_spy_long_put_chain(
     selected_contracts = contracts_df.to_dict(orient="records")
     snapshots = fetch_option_snapshots(contract.get("symbol") for contract in selected_contracts)
     frame = snapshots_to_frame(selected_contracts, snapshots)
+    if not frame.empty:
+        frame["underlying_price"] = frame["underlying_price"].where(frame["underlying_price"] > 0, spot_price)
     frame = filter_long_put_candidates(frame)
     frame = score_long_put_candidates(frame)
 

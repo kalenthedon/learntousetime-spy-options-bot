@@ -6,6 +6,7 @@ import pandas as pd
 
 def make_option_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+    out = out.sort_values(["option_symbol", "timestamp"]).reset_index(drop=True)
 
     out["spread"] = out["ask"] - out["bid"]
     out["spread_pct_mid"] = np.where(out["mid"] > 0, out["spread"] / out["mid"], np.nan)
@@ -32,8 +33,9 @@ def make_option_features(df: pd.DataFrame) -> pd.DataFrame:
     out["mid_ret_3"] = grouped["mid"].pct_change(3)
     out["iv_chg_1"] = grouped["mark_iv"].diff()
     out["iv_chg_3"] = grouped["mark_iv"].diff(3)
-    out["underlying_ret_1"] = grouped["underlying_price"].pct_change()
-    out["underlying_ret_3"] = grouped["underlying_price"].pct_change(3)
+    underlying_grouped = out.groupby("underlying_symbol", sort=False)
+    out["underlying_ret_1"] = underlying_grouped["underlying_price"].pct_change()
+    out["underlying_ret_3"] = underlying_grouped["underlying_price"].pct_change(3)
     out["volume_z_10"] = grouped["volume"].transform(
         lambda s: (s - s.rolling(10).mean()) / s.rolling(10).std()
     )
@@ -41,5 +43,4 @@ def make_option_features(df: pd.DataFrame) -> pd.DataFrame:
     out["oi_rank_in_chain"] = out.groupby(["timestamp", "underlying_symbol"])["open_interest"].rank(pct=True)
 
     out = out.replace([np.inf, -np.inf], np.nan)
-    out = out.dropna().reset_index(drop=True)
     return out

@@ -30,6 +30,8 @@ class WalkForwardRunConfig:
     step_size: int
     purge_size: int
     embargo_size: int = 0
+    min_train_rows: int = 200
+    min_test_rows: int = 20
 
     # Early stopping
     enable_early_stopping: bool = True
@@ -145,18 +147,26 @@ def walk_forward_train_predict(
     model_factory: Callable[[], BaseEstimator],
     cfg: WalkForwardRunConfig,
     time_col: Optional[str] = None,
+    split_group_col: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Returns:
       pred_df: out-of-sample predictions
       diag: diagnostics dict with OOS metrics and fold diagnostics
     """
-    assert_time_sorted(df, time_col=time_col)
+    assert_time_sorted(df, time_col=split_group_col or time_col)
 
     X = df[cfg.feature_cols].astype(float)
     y = df[cfg.label_col].astype(int)
 
-    n = len(df)
+    if split_group_col is not None:
+        split_groups = pd.Series(df[split_group_col]).reset_index(drop=True)
+        group_codes, group_values = pd.factorize(split_groups, sort=False)
+        n = len(group_values)
+    else:
+        split_groups = None
+        group_codes = None
+        n = len(df)
     splitter = PurgedWalkForwardSplitter(
         PurgedWalkForwardConfig(
             train_size=cfg.train_size,
@@ -175,16 +185,21 @@ def walk_forward_train_predict(
     os.makedirs(cfg.model_dir, exist_ok=True)
 
     for fold_id, (train_idx, test_idx) in enumerate(splitter.split(n)):
-        train_mask = np.isfinite(X.iloc[train_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[train_idx].to_numpy())
-        test_mask = np.isfinite(X.iloc[test_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[test_idx].to_numpy())
+        if split_group_col is not None:
+            train_row_idx = np.flatnonzero(np.isin(group_codes, train_idx))
+            test_row_idx = np.flatnonzero(np.isin(group_codes, test_idx))
+        else:
+            train_row_idx = train_idx
+            test_row_idx = test_idx
 
-        train_idx_eff = train_idx[train_mask]
-        test_idx_eff = test_idx[test_mask]
+        train_mask = np.isfinite(X.iloc[train_row_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[train_row_idx].to_numpy())
+        test_mask = np.isfinite(X.iloc[test_row_idx].to_numpy()).all(axis=1) & np.isfinite(y.iloc[test_row_idx].to_numpy())
 
-        if len(train_idx_eff) < 200 or len(test_idx_eff) < 20:
+        train_idx_eff = train_row_idx[train_mask]
+        test_idx_eff = test_row_idx[test_mask]
+
+        if len(train_idx_eff) < cfg.min_train_rows or len(test_idx_eff) < cfg.min_test_rows:
             continue
-
-        model = model_factory()
 
         X_test = X.iloc[test_idx_eff]
         y_test = y.iloc[test_idx_eff]
@@ -207,6 +222,34 @@ def walk_forward_train_predict(
 
         X_es = X.iloc[es_idx] if es_idx is not None else None
         y_es = y.iloc[es_idx] if es_idx is not None else None
+
+        if pd.Series(y_fit).nunique() < 2:
+            constant_proba = float(pd.Series(y_fit).iloc[0]) if len(y_fit) else 0.0
+            fold_df = pd.DataFrame(
+                {
+                    "fold_id": fold_id,
+                    "proba_raw": np.full(len(y_test), constant_proba, dtype=float),
+                    "y_true": y_test.to_numpy(),
+                },
+                index=out_index[test_idx_eff],
+            )
+            fold_diags.append({
+                "fold_id": int(fold_id),
+                "n": int(len(fold_df)),
+                "pos_rate": float(np.mean(fold_df["y_true"])) if len(fold_df) else 0.0,
+                "proba_col": "proba_raw",
+                "auc": float("nan"),
+                "auc_inverted": float("nan"),
+                "logloss": float("nan"),
+                "start": str(fold_df.index.min()),
+                "end": str(fold_df.index.max()),
+                "note": f"single_class_train={int(constant_proba)}",
+            })
+            preds_out.append(fold_df)
+            print(f"Fold {fold_id} | single-class training slice -> constant proba={constant_proba:.3f}")
+            continue
+
+        model = model_factory()
 
         model = _fit_with_optional_early_stopping(model, X_fit, y_fit, X_es, y_es, cfg)
 
@@ -279,11 +322,17 @@ def walk_forward_train_predict(
             proba_col = "proba_cal" if "proba_cal" in fold_df.columns else "proba_raw"
             y_true_fold = fold_df["y_true"].astype(int).to_numpy()
             p_fold = fold_df[proba_col].astype(float).to_numpy()
-
-            fold_auc = float(roc_auc_score(y_true_fold, p_fold))
-            fold_auc_inv = float(roc_auc_score(y_true_fold, 1.0 - p_fold))
-            fold_ll = float(log_loss(y_true_fold, p_fold))
             fold_pos_rate = float(np.mean(y_true_fold))
+            if len(np.unique(y_true_fold)) < 2:
+                fold_auc = float("nan")
+                fold_auc_inv = float("nan")
+                fold_ll = float(log_loss(y_true_fold, p_fold, labels=[0, 1]))
+                fold_note = "single_class_test"
+            else:
+                fold_auc = float(roc_auc_score(y_true_fold, p_fold))
+                fold_auc_inv = float(roc_auc_score(y_true_fold, 1.0 - p_fold))
+                fold_ll = float(log_loss(y_true_fold, p_fold))
+                fold_note = None
 
             fold_diags.append({
                 "fold_id": int(fold_id),
@@ -295,12 +344,19 @@ def walk_forward_train_predict(
                 "logloss": fold_ll,
                 "start": str(fold_df.index.min()),
                 "end": str(fold_df.index.max()),
+                "note": fold_note,
             })
 
-            print(
-                f"Fold {fold_id} | n={len(fold_df)} | pos={fold_pos_rate:.3f} | "
-                f"AUC={fold_auc:.4f} | invAUC={fold_auc_inv:.4f} | LL={fold_ll:.6f}"
-            )
+            if fold_note == "single_class_test":
+                print(
+                    f"Fold {fold_id} | n={len(fold_df)} | pos={fold_pos_rate:.3f} | "
+                    f"AUC=nan | invAUC=nan | LL={fold_ll:.6f} | note={fold_note}"
+                )
+            else:
+                print(
+                    f"Fold {fold_id} | n={len(fold_df)} | pos={fold_pos_rate:.3f} | "
+                    f"AUC={fold_auc:.4f} | invAUC={fold_auc_inv:.4f} | LL={fold_ll:.6f}"
+                )
         except Exception as e:
             print(f"Fold {fold_id} diagnostics skipped: {e}")
 
@@ -321,15 +377,19 @@ def walk_forward_train_predict(
 
         y_true = pred_df["y_true"].astype(int).to_numpy()
         p = pred_df[proba_col].astype(float).to_numpy()
-
-        oos_auc = float(roc_auc_score(y_true, p))
-        oos_auc_inverted = float(roc_auc_score(y_true, 1.0 - p))
         oos_logloss = float(log_loss(y_true, p))
+        if len(np.unique(y_true)) >= 2:
+            oos_auc = float(roc_auc_score(y_true, p))
+            oos_auc_inverted = float(roc_auc_score(y_true, 1.0 - p))
 
         print("\n=== OOS Classification Diagnostics ===")
-        print(f"OOS AUC: {oos_auc:.4f}")
+        print(f"OOS AUC: {oos_auc:.4f}" if np.isfinite(oos_auc) else "OOS AUC: nan")
         print(f"OOS LogLoss: {oos_logloss:.6f}")
-        print(f"OOS AUC (inverted probs): {oos_auc_inverted:.4f}")
+        print(
+            f"OOS AUC (inverted probs): {oos_auc_inverted:.4f}"
+            if np.isfinite(oos_auc_inverted)
+            else "OOS AUC (inverted probs): nan"
+        )
     except Exception as e:
         print(f"OOS diagnostics skipped: {e}")
 

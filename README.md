@@ -18,7 +18,6 @@ Current first path:
 
 ## What This Repo Does Not Do Yet
 
-- paper trade options
 - place live options orders
 - model assignment / exercise risk
 - run a full production-grade options PnL and fill simulator
@@ -94,12 +93,89 @@ Run starter walk-forward ML research on a chain snapshot CSV:
 ./.venv/bin/python -m src.backtests.run_options_research --csv-path centralized_data/options/SPY_put_chain_history.csv
 ```
 
+Write the current ML-ranked candidate report for the latest snapshot:
+
+```bash
+./.venv/bin/python -m src.options.current_candidate_report
+```
+
+This writes:
+- `experiments/options_current_candidates.json`
+- `experiments/options_current_candidates.csv`
+- `experiments/options_candidate_journal.csv`
+
+The JSON report also includes a `paper_trade_ready` flag based on the latest OOS diagnostics plus the historical threshold sweep.
+The default selector now uses a stricter operational filter set: `min_entry_score=0.10`, `min_open_interest=100`, `max_spread_pct=0.12`, `min_abs_delta=0.25`, and `max_days_to_expiry=10`.
+
+Backfill the selector across historical snapshots:
+
+```bash
+./.venv/bin/python -m src.options.backfill_candidate_journal
+```
+
+This writes:
+- `experiments/options_backfill_candidate_summary.json`
+- `experiments/options_backfill_candidate_journal.csv`
+- `experiments/options_backfill_threshold_sweep.csv`
+
+Run one lightweight paper-selector cycle:
+
+```bash
+./.venv/bin/python -m src.options.paper_selector_cycle
+```
+
+This writes:
+- `experiments/options_paper_selector_latest.json`
+- `experiments/options_paper_selector_journal.csv`
+- `experiments/options_paper_portfolio_state.json`
+- `experiments/options_paper_portfolio_journal.csv`
+
+Run the paper selector continuously on a 15-minute interval:
+
+```bash
+./.venv/bin/python -m src.options.paper_selector_daemon --run-immediately
+```
+
+Check the current paper portfolio status:
+
+```bash
+./.venv/bin/python -m src.options.paper_portfolio_status
+```
+
+Check a combined paper-ops summary:
+
+```bash
+./.venv/bin/python -m src.options.paper_ops_status
+```
+
+Run the at-a-glance paper dashboard:
+
+```bash
+./.venv/bin/python -m src.options.paper_dashboard
+```
+
+Default is plain HTTP. If you want HTTPS, provide a certificate and key:
+
+```bash
+./.venv/bin/python -m src.options.paper_dashboard --certfile path/to/cert.pem --keyfile path/to/key.pem
+```
+
+The repo shell aliases include a ready-made HTTPS launcher once you source `project_aliases.zsh`:
+
+```bash
+source project_aliases.zsh
+ltut-opt-dashboard
+```
+
 ## Suggested Workflow
 
 1. Collect snapshots repeatedly during market hours.
 2. Watch `history_status` until the dataset has enough unique snapshots and contracts.
 3. Run the starter research workflow on the accumulated history.
-4. Use that output to decide whether to build a real options PnL backtest next.
+4. Run `current_candidate_report` to see which contract would be selected right now.
+5. Run `backfill_candidate_journal` to measure selector cadence, no-trade frequency, and threshold-level trade quality over time.
+6. Run `paper_selector_cycle` on each collection interval to record the actual paper-selection decision stream.
+7. Use `paper_selector_daemon` for unattended market-hours paper runs and `paper_portfolio_status` to monitor the portfolio state.
 
 Suggested automation:
 - run `market_hours_collect` every 15 minutes
